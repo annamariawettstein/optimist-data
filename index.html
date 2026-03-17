@@ -920,15 +920,19 @@
           `<div class="detail-row"><span class="detail-label">Score</span><span>${(s.score*100).toFixed(1)}</span></div>` +
         `</div>`;
 
-      row.querySelector('.top-row-main').addEventListener('click', e => {
+      row.querySelector('.top-row-main').addEventListener('click', () => {
+        // expand/collapse detail
         const isExpanded = row.classList.contains('expanded');
-        // collapse all others
         list.querySelectorAll('.top-row.expanded').forEach(r => r.classList.remove('expanded'));
         if (!isExpanded) row.classList.add('expanded');
-      });
-      row.querySelector('.top-row-main').addEventListener('dblclick', () => {
-        map.setView([s.lat, s.lon], 15);
-        stationMarkers.forEach(sm => { if (sm._id === s.id) sm.openPopup(); });
+
+        // fly to marker and open its popup (works even if inside a cluster)
+        const marker = stationMarkers.find(sm => sm._id === s.id);
+        if (marker) {
+          stationCluster.zoomToShowLayer(marker, () => marker.openPopup());
+        } else {
+          map.setView([s.lat, s.lon], 15);
+        }
       });
       list.appendChild(row);
     });
