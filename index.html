@@ -210,6 +210,12 @@
       cursor: pointer; transition: all .15s; margin-left: auto;
     }
     .map-only-btn.active { background: #4c1d95; color: white; border-color: #4c1d95; }
+    .export-btn {
+      font-size: 11px; font-weight: 500; padding: 4px 10px; border-radius: 6px;
+      border: 1px solid #bbf7d0; background: #f0fdf4; color: #15803d;
+      cursor: pointer; transition: all .15s; white-space: nowrap;
+    }
+    .export-btn:hover { background: #dcfce7; border-color: #86efac; }
     /* list rows */
     .top-row {
       padding: 0; border-bottom: 1px solid #f1f5f9;
@@ -415,11 +421,13 @@
         <button class="top-filter-btn active" data-n="50">Top 50</button>
         <button class="top-filter-btn" data-n="100">Top 100</button>
         <button class="map-only-btn" id="btn-map-only">Map only</button>
+        <button class="export-btn" id="btn-export-excel" onclick="exportTopSites()">⬇ Excel</button>
       </div>
       <div id="top-list"></div>
     </div>
   </div>
 
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
   <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
@@ -882,6 +890,28 @@
       `<span class="subtype-swatch" style="background:${color}"></span>` +
       `<span>${label}</span><span style="color:#94a3b8;margin-left:auto">${subtypeCounts[k]}</span></div>`;
   });
+  // ── Scoring formula (transparent, live-computed) ────────
+  // Weights must sum to 1. Adjust here to change the ranking.
+  const SCORE_WEIGHTS = {
+    capacity : 0.50,   // Available grid capacity  (higher MW = better)
+    distSub  : 0.30,   // Distance to nearest distribution substation (closer = better)
+    ebDist   : 0.20,   // Distance to nearest HV grid substation      (closer = better)
+  };
+  const EB_MAX_CAP = 97.06; // Maximum observed available capacity (MW) — normalization ceiling
+
+  function computeSiteScore(s) {
+    const capScore    = Math.min(s.ebCapacity / EB_MAX_CAP, 1);  // 0–1
+    const distSubScore = 1 / (1 + s.distSubDist);                // 0–1, inverse-distance
+    const ebDistScore  = 1 / (1 + s.ebDist);                     // 0–1, inverse-distance
+    return SCORE_WEIGHTS.capacity * capScore
+         + SCORE_WEIGHTS.distSub  * distSubScore
+         + SCORE_WEIGHTS.ebDist   * ebDistScore;
+  }
+
+  // Recompute scores and re-sort
+  topSites.forEach(s => { s.score = computeSiteScore(s); });
+  topSites.sort((a, b) => b.score - a.score);
+
   // ── Build top list ──────────────────────────────────────
   const maxScore = topSites[0] ? topSites[0].score : 1;
 
@@ -917,7 +947,7 @@
           `<div class="detail-row"><span class="detail-label">Grid substation</span><span>${s.ebName}</span></div>` +
           `<div class="detail-row"><span class="detail-label">Distance to grid</span><span>${distFmt(s.ebDist)}</span></div>` +
           `<div class="detail-row"><span class="detail-label">Dist. substation</span><span>${s.distSubName || '—'}</span></div>` +
-          `<div class="detail-row"><span class="detail-label">Score</span><span>${(s.score*100).toFixed(1)}</span></div>` +
+          `<div class="detail-row"><span class="detail-label">Score</span><span>${((s.score/maxScore)*100).toFixed(1)}%</span></div>` +
         `</div>`;
 
       row.querySelector('.top-row-main').addEventListener('click', () => {
@@ -1069,6 +1099,66 @@
     searchTerm = e.target.value.trim().toLowerCase();
     applyFilters();
   });
+
+  // ── Export top 100 sites to Excel ────────────────────────
+  function exportTopSites() {
+    // Build lookup from stations for OTA ID and postcode
+    const stationLookup = {};
+    stations.forEach(st => { stationLookup[st.id] = st; });
+
+    const distFmt = d => d < 1 ? ((d * 1000).toFixed(0) + ' m') : (d.toFixed(2) + ' km');
+
+    const rows = topSites.slice(0, 100).map((s, idx) => {
+      const base = stationLookup[s.id] || {};
+      return {
+        'Rank':                              idx + 1,
+        'Site ID':                           s.id,
+        'OTA ID':                            base.ota || '',
+        'Region':                            s.region,
+        'City':                              s.city,
+        'Postcode':                          base.postcode || '',
+        'Street':                            s.street,
+        'Latitude':                          s.lat,
+        'Longitude':                         s.lon,
+        // Grid (HV) substation
+        'Grid Substation':                   s.ebName,
+        'Distance to Grid Substation (km)':  parseFloat(s.ebDist.toFixed(3)),
+        'Available Grid Capacity (MW)':      s.ebCapacity,
+        // Distribution substation
+        'Distribution Substation':           s.distSubName || '',
+        'Distance to Dist. Substation':      distFmt(s.distSubDist),
+        // Ranking
+        'Composite Score (%)':               parseFloat(((s.score / maxScore) * 100).toFixed(2)),
+      };
+    });
+
+    const ws = XLSX.utils.json_to_sheet(rows);
+
+    // Column widths
+    ws['!cols'] = [
+      { wch: 6  }, // Rank
+      { wch: 12 }, // Site ID
+      { wch: 14 }, // OTA ID
+      { wch: 18 }, // Region
+      { wch: 18 }, // City
+      { wch: 10 }, // Postcode
+      { wch: 32 }, // Street
+      { wch: 11 }, // Lat
+      { wch: 11 }, // Lon
+      { wch: 24 }, // Grid Substation
+      { wch: 28 }, // Distance to Grid
+      { wch: 26 }, // Available Capacity
+      { wch: 28 }, // Dist Substation
+      { wch: 26 }, // Distance to Dist
+      { wch: 16 }, // Score
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Top 100 OTA Sites');
+
+    const date = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(wb, `optimus_top100_sites_${date}.xlsx`);
+  }
   </script>
 </body>
 </html>
